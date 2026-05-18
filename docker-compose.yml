@@ -1,0 +1,28 @@
+﻿version: '3.8'
+
+services:
+  pamojadata:
+    build: .
+    container_name: pamojadata_app
+    ports:
+      - "8501:8501"
+    environment:
+      - PAMOJADATA_ADMIN_PASSWORD=${PAMOJADATA_ADMIN_PASSWORD:-Admin2026!}
+      - PAMOJADATA_ADMIN_USER=${PAMOJADATA_ADMIN_USER:-admin}
+      - PAMOJADATA_ADMIN_EMAIL=${PAMOJADATA_ADMIN_EMAIL:-admin@pamojadata.org}
+      - PAMOJADATA_DB_PATH=/app/secure_data/pamojadata.db
+      - SESSION_EXPIRE_HOURS=8
+      - MAX_LOGIN_ATTEMPTS=5
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    volumes:
+      - ./secure_data:/app/secure_data
+      - ./backups:/app/backups
+      - ./logs:/app/logs
+      - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
+    restart: unless-stopped
+    networks:
+      - pamojadata_network
+
+networks:
+  pamojadata_network:
+    driver: bridge

@@ -1,0 +1,25 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyc
+venv/
+.venv/
+
+# Secrets & Credentials
+*.json
+*.pem
+*.key
+.streamlit/secrets.toml
+.env
+
+# Database
+*.db
+secure_data/
+backups/
+
+# Tools (contains credentials)
+tools/
+
+# IDE
+.vscode/
+.idea/
