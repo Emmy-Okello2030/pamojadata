@@ -6,8 +6,9 @@ import requests
 import streamlit as st
 import os
 
-# Gemini API settings
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+# Gemini API settings — using gemini-1.5-flash (free tier)
+GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # Donor-specific writing guidelines
 DONOR_GUIDELINES = {
@@ -23,12 +24,15 @@ DONOR_GUIDELINES = {
 def get_api_key():
     """Reads Gemini API key securely from Streamlit secrets or environment variable."""
     try:
-        return st.secrets["GEMINI_API_KEY"]
+        key = st.secrets.get("GEMINI_API_KEY", "")
+        if key:
+            return key
     except Exception:
-        api_key = os.environ.get("GEMINI_API_KEY", "")
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable not set")
-        return api_key
+        pass
+    key = os.environ.get("GEMINI_API_KEY", "")
+    if not key:
+        raise ValueError("GEMINI_API_KEY not found in secrets or environment variables.")
+    return key
 
 
 def call_gemini(prompt, max_tokens=2000):
@@ -41,9 +45,10 @@ def call_gemini(prompt, max_tokens=2000):
     except ValueError as e:
         return f"⚠️ Configuration error: {str(e)}"
 
-    url = GEMINI_API_URL
+    # Gemini API uses key as query parameter, not Bearer token
+    url = f"{GEMINI_BASE_URL}/{GEMINI_MODEL}:generateContent?key={api_key}"
+
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
 
@@ -61,23 +66,26 @@ def call_gemini(prompt, max_tokens=2000):
     }
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=20)
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         data = response.json()
         return data["candidates"][0]["content"]["parts"][0]["text"]
 
     except requests.exceptions.HTTPError as e:
-        if response.status_code == 400:
-            return "⚠️ API Error 400: Bad Request. Check that your API key is valid and enabled for the Gemini API."
-        elif response.status_code == 401:
+        status = response.status_code
+        if status == 400:
+            return "⚠️ API Error 400: Bad Request. Check your API key is valid and Gemini API is enabled."
+        elif status == 401:
             return "⚠️ API Error 401: Unauthorized. Your API key may be invalid or revoked."
-        elif response.status_code == 429:
-            return "⚠️ API Error 429: Rate limit exceeded. Please try again later."
-        return f"⚠️ API Error {response.status_code}: {str(e)}"
+        elif status == 403:
+            return "⚠️ API Error 403: Forbidden. Your API key may not have access to this model. Go to aistudio.google.com and verify your key."
+        elif status == 429:
+            return "⚠️ API Error 429: Rate limit exceeded. Please wait a moment and try again."
+        return f"⚠️ API Error {status}: {str(e)}"
     except requests.exceptions.ConnectionError:
         return "⚠️ Connection failed. Check your internet connection and try again."
     except KeyError:
-        return "⚠️ Unexpected response format from Gemini API."
+        return f"⚠️ Unexpected response format from Gemini API. Response: {response.text[:200]}"
     except Exception as e:
         return f"⚠️ Unexpected error: {str(e)}"
 

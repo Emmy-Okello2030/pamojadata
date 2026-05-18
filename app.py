@@ -67,10 +67,10 @@ def validate_session() -> bool:
     return True
 
 def render_login() -> None:
-    st.markdown('<div class="pamoja-hero"><h1>PamojaData</h1><p>Humanitarian Intelligence Platform</p></div>', unsafe_allow_html=True)
-    
+    st.markdown('<div class="pamoja-hero"><h1>PamojaData 🌍</h1><p>Humanitarian Intelligence Platform</p></div>', unsafe_allow_html=True)
+
     tab_login, tab_register = st.tabs(["Sign In", "Sign Up"])
-    
+
     with tab_login:
         identifier = st.text_input("Email or Username", key="login_identifier")
         password = st.text_input("Password", type="password", key="login_password")
@@ -87,7 +87,10 @@ def render_login() -> None:
                     st.error("Login failed")
             else:
                 st.warning("Please enter email/username and password.")
-    
+
+        st.markdown("---")
+        st.caption("Default credentials: **admin** / **admin123**")
+
     with tab_register:
         full_name = st.text_input("Full Name", key="reg_full_name")
         email = st.text_input("Email", key="reg_email")
@@ -101,7 +104,7 @@ def render_login() -> None:
         password = st.text_input("Password", type="password", key="reg_password")
         confirm = st.text_input("Confirm Password", type="password", key="reg_confirm")
         terms = st.checkbox("I agree to the terms and conditions", key="reg_terms")
-        
+
         if st.button("Create Account", use_container_width=True, key="register_button"):
             if not terms:
                 st.error("Please agree to the terms and conditions")
@@ -124,43 +127,78 @@ def render_login() -> None:
                 else:
                     st.error(msg)
 
-# Initialize
+# ── Initialize ────────────────────────────────────────────────────────────────
 initialize_app()
 
-# Session check
+# ── Session check ─────────────────────────────────────────────────────────────
 if 'user' in st.session_state and not validate_session():
     st.warning("Session expired. Please sign in again.")
 
-# Show login if not authenticated
+# ── Show login if not authenticated ───────────────────────────────────────────
 if 'user' not in st.session_state:
     render_login()
     st.stop()
 
-# Sidebar
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### PamojaData")
+    st.markdown("""
+    <div style='text-align:center; padding:1rem 0'>
+        <div style='font-size:1.5rem; font-weight:900; color:white'>🌍 PamojaData</div>
+        <div style='font-size:0.7rem; color:#5EDDD0; letter-spacing:0.1em; text-transform:uppercase'>
+            Humanitarian Intelligence Platform
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     st.markdown("---")
-    
+
+    # Build page list based on role permissions
     role = st.session_state['user'].get('role', '')
     available_pages = []
-    for page_name, renderer in PAGE_RENDERERS.items():
+    for page_name in PAGE_RENDERERS.keys():
         perm = PAGE_PERMISSIONS.get(page_name)
         if perm is None or has_permission(role, perm):
             available_pages.append(page_name)
-    
-    page = st.selectbox("Navigate", available_pages, key="nav_select")
+
+    page = st.selectbox("NAVIGATE", available_pages, key="nav_select", label_visibility="visible")
+
     st.markdown("---")
+
+    # User info
     user = st.session_state['user']
-    st.markdown(f"**User:** {user.get('username', '')}")
-    st.markdown(f"**Role:** {user.get('role', '')}")
-    
+    st.markdown(f"""
+    <div style="background:rgba(255,255,255,0.1); padding:0.8rem 1rem; border-radius:8px">
+        <div style="font-size:0.9rem; font-weight:700">👤 {user.get('username', '')}</div>
+        <div style="font-size:0.75rem; opacity:0.8">{user.get('role', '')}</div>
+        <div style="font-size:0.75rem; opacity:0.7">{user.get('org_name', '') or ''}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("")
+
     session_token = st.session_state.get('session_token')
-    if st.button("Sign Out", use_container_width=True, key="logout_button"):
+    if st.button("🚪 Sign Out", use_container_width=True, key="logout_button"):
         if session_token:
             logout(str(session_token))
         clear_session_state()
         st.rerun()
 
-# Render page
+    st.markdown("---")
+
+    # Pipeline status
+    st.markdown("**PIPELINE STATUS**")
+    pipeline = {
+        "Data Loaded": 'df' in st.session_state,
+        "Quality Checked": 'quality_results' in st.session_state,
+        "Analysis Done": 'analyzed_df' in st.session_state,
+        "Risk Assessed": 'risk_df' in st.session_state,
+        "Narrative Ready": 'narrative' in st.session_state,
+    }
+    for step, done in pipeline.items():
+        icon = "✅" if done else "⏳"
+        st.markdown(f"<div style='font-size:0.85rem; padding:0.15rem 0; color:white'>{icon} {step}</div>",
+                    unsafe_allow_html=True)
+
+# ── Render selected page ──────────────────────────────────────────────────────
 if page in PAGE_RENDERERS:
     PAGE_RENDERERS[page]()
