@@ -1,0 +1,34 @@
+# Dockerfile.engine - Standalone Quality Engine API Service
+# Use this if you want the engine as a separate service in docker-compose
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy engine requirements
+COPY requirements-engine.txt .
+RUN pip install --no-cache-dir -r requirements-engine.txt
+
+# Copy quality engine code
+COPY quality_engine_api/ ./quality_engine_api/
+COPY src/quality_engine/ ./src/quality_engine/
+COPY src/quality/quality_checks.py ./src/quality/
+
+# Create necessary directories
+RUN mkdir -p /app/data /app/logs /app/temp
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/ || exit 1
+
+# Run the API server
+CMD ["python", "quality_engine_api/server.py"]

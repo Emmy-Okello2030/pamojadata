@@ -1,12 +1,59 @@
 ﻿version: '3.8'
 
 services:
+  # ============================================================================
+  # QUALITY ENGINE API SERVICE (NEW)
+  # ============================================================================
+  quality-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    container_name: pamojadata_quality_engine
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - QUALITY_ENGINE_PORT=8000
+      - MISSING_THRESHOLD=0.3
+      - DUPLICATE_THRESHOLD=0.05
+      - AUTO_CORRECTION=true
+      - MAX_FILE_SIZE_MB=1024
+      - CHUNK_SIZE=100000
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./quality_engine_data:/app/data
+      - ./quality_engine_logs:/app/logs
+      - ./quality_engine_temp:/app/temp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - pamojadata_network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # ============================================================================
+  # MAIN PAMOJADATA APP (ENHANCED)
+  # ============================================================================
   pamojadata:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: pamojadata_app
     ports:
       - "8501:8501"
     environment:
+      # Existing environment variables
       - PAMOJADATA_ADMIN_PASSWORD=${PAMOJADATA_ADMIN_PASSWORD:-Admin2026!}
       - PAMOJADATA_ADMIN_USER=${PAMOJADATA_ADMIN_USER:-admin}
       - PAMOJADATA_ADMIN_EMAIL=${PAMOJADATA_ADMIN_EMAIL:-admin@pamojadata.org}
@@ -14,15 +61,99 @@ services:
       - SESSION_EXPIRE_HOURS=8
       - MAX_LOGIN_ATTEMPTS=5
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      
+      # NEW: Quality Engine Integration
+      - QUALITY_ENGINE_URL=http://quality-engine:8000
+      - ENABLE_QUALITY_ENGINE=true
+      - QUALITY_AUTO_CLEAN=true
+      - QUALITY_SCORE_THRESHOLD=0.7
+      
+      # Quality configuration
+      - ENVIRONMENT=production
+      - DEBUG=false
     volumes:
+      # Existing volumes
       - ./secure_data:/app/secure_data
       - ./backups:/app/backups
       - ./logs:/app/logs
       - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
+      
+      # NEW: Quality engine volumes
+      - ./quality_engine_data:/app/quality_engine_data:ro
+    restart: unless-stopped
+    depends_on:
+      quality-engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - pamojadata_network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+
+  # ============================================================================
+  # OPTIONAL: REDIS FOR BACKGROUND TASKS (IF NEEDED)
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: pamojadata_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis_data:/data
     restart: unless-stopped
     networks:
       - pamojadata_network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    profiles:
+      - full  # Only start if using --profile full
+
+  # ============================================================================
+  # OPTIONAL: NGINX REVERSE PROXY (FOR PRODUCTION)
+  # ============================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: pamojadata_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - pamojadata
+      - quality-engine
+    restart: unless-stopped
+    networks:
+      - pamojadata_network
+    profiles:
+      - production  # Only start in production mode
 
 networks:
   pamojadata_network:
     driver: bridge
+    name: pamojadata_network
+
+# ============================================================================
+# VOLUMES FOR PERSISTENT STORAGE
+# ============================================================================
+volumes:
+  pamojadata_data:
+    driver: local
+  quality_engine_data:
+    driver: local
+  redis_data:
+    driver: local

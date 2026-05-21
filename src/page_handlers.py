@@ -1,5 +1,5 @@
 ﻿import streamlit as st
-
+from src.pages.quality_monitor import render_quality_monitor
 from src.auth.auth import has_permission, require_permission
 from src.pages import (
     render_home,
@@ -68,3 +68,7 @@ def render_page(page_name: str):
         renderer()
     else:
         st.warning("Page not found. Please select a valid page from the sidebar.")
+
+from src.pages.quality_monitor import render_quality_monitor
+PAGE_RENDERERS['quality_monitor'] = render_quality_monitor
+PAGE_PERMISSIONS['quality_monitor'] = 'Standard User'

@@ -1,14 +1,21 @@
 # ai_reporter.py — PamojaData AI Reporting Engine
-# Uses Google Gemini API to generate professional donor narratives
-# Tailored to specific donor styles and programme context
+# Supports Google Gemini, Groq and OpenRouter with automatic fallback
+# If one API fails or hits rate limits, automatically tries the next one
 
+import time
 import requests
 import streamlit as st
 import os
 
-# Gemini API settings — using gemini-1.5-flash (free tier)
-GEMINI_MODEL = "gemini-1.5-flash"
+# ── MODEL SETTINGS ────────────────────────────────────────────────────────────
+GEMINI_MODEL = "gemini-2.0-flash-lite"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+OPENROUTER_MODEL = "mistralai/mistral-7b-instruct:free"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Donor-specific writing guidelines
 DONOR_GUIDELINES = {
@@ -21,43 +28,47 @@ DONOR_GUIDELINES = {
 }
 
 
-def get_api_key():
-    """Reads Gemini API key securely from Streamlit secrets or environment variable."""
+# ── API KEY HELPERS ───────────────────────────────────────────────────────────
+
+def get_gemini_key():
     try:
         key = st.secrets.get("GEMINI_API_KEY", "")
-        if key:
-            return key
+        if key: return key
     except Exception:
         pass
-    key = os.environ.get("GEMINI_API_KEY", "")
-    if not key:
-        raise ValueError("GEMINI_API_KEY not found in secrets or environment variables.")
-    return key
+    return os.environ.get("GEMINI_API_KEY", "")
 
 
-def call_gemini(prompt, max_tokens=2000):
-    """
-    Makes a request to the Gemini API.
-    Returns the generated text or an error message.
-    """
+def get_groq_key():
     try:
-        api_key = get_api_key()
-    except ValueError as e:
-        return f"⚠️ Configuration error: {str(e)}"
+        key = st.secrets.get("GROQ_API_KEY", "")
+        if key: return key
+    except Exception:
+        pass
+    return os.environ.get("GROQ_API_KEY", "")
 
-    # Gemini API uses key as query parameter, not Bearer token
+
+def get_openrouter_key():
+    try:
+        key = st.secrets.get("OPENROUTER_API_KEY", "")
+        if key: return key
+    except Exception:
+        pass
+    return os.environ.get("OPENROUTER_API_KEY", "")
+
+
+# ── INDIVIDUAL API CALLERS ────────────────────────────────────────────────────
+
+def call_gemini(prompt, max_tokens=1500, retries=2, retry_delay=15):
+    """Calls Google Gemini API with retry on rate limit."""
+    api_key = get_gemini_key()
+    if not api_key:
+        return None, "No Gemini API key configured."
+
     url = f"{GEMINI_BASE_URL}/{GEMINI_MODEL}:generateContent?key={api_key}"
-
-    headers = {
-        "Content-Type": "application/json"
-    }
-
+    headers = {"Content-Type": "application/json"}
     payload = {
-        "contents": [
-            {
-                "parts": [{"text": prompt}]
-            }
-        ],
+        "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "maxOutputTokens": max_tokens,
             "temperature": 0.7,
@@ -65,148 +76,202 @@ def call_gemini(prompt, max_tokens=2000):
         }
     }
 
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+            return text, None
+        except requests.exceptions.HTTPError:
+            status = response.status_code
+            if status == 429 and attempt < retries:
+                time.sleep(retry_delay * attempt)
+                continue
+            return None, f"Gemini API Error {status}"
+        except Exception as e:
+            return None, f"Gemini error: {str(e)}"
 
-    except requests.exceptions.HTTPError as e:
-        status = response.status_code
-        if status == 400:
-            return "⚠️ API Error 400: Bad Request. Check your API key is valid and Gemini API is enabled."
-        elif status == 401:
-            return "⚠️ API Error 401: Unauthorized. Your API key may be invalid or revoked."
-        elif status == 403:
-            return "⚠️ API Error 403: Forbidden. Your API key may not have access to this model. Go to aistudio.google.com and verify your key."
-        elif status == 429:
-            return "⚠️ API Error 429: Rate limit exceeded. Please wait a moment and try again."
-        return f"⚠️ API Error {status}: {str(e)}"
-    except requests.exceptions.ConnectionError:
-        return "⚠️ Connection failed. Check your internet connection and try again."
-    except KeyError:
-        return f"⚠️ Unexpected response format from Gemini API. Response: {response.text[:200]}"
-    except Exception as e:
-        return f"⚠️ Unexpected error: {str(e)}"
+    return None, "Gemini rate limit — moving to fallback."
 
+
+def call_groq(prompt, max_tokens=1500, retries=2, retry_delay=10):
+    """Calls Groq API with retry on rate limit."""
+    api_key = get_groq_key()
+    if not api_key:
+        return None, "No Groq API key configured."
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0.7
+    }
+
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.post(GROQ_BASE_URL, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            text = response.json()["choices"][0]["message"]["content"]
+            return text, None
+        except requests.exceptions.HTTPError:
+            status = response.status_code
+            if status == 429 and attempt < retries:
+                time.sleep(retry_delay * attempt)
+                continue
+            return None, f"Groq API Error {status}"
+        except Exception as e:
+            return None, f"Groq error: {str(e)}"
+
+    return None, "Groq rate limit — moving to fallback."
+
+
+def call_openrouter(prompt, max_tokens=1500, retries=2, retry_delay=10):
+    """Calls OpenRouter API with retry on rate limit."""
+    api_key = get_openrouter_key()
+    if not api_key:
+        return None, "No OpenRouter API key configured."
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://pamojadata.streamlit.app",
+        "X-Title": "PamojaData"
+    }
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0.7
+    }
+
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.post(OPENROUTER_BASE_URL, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            text = response.json()["choices"][0]["message"]["content"]
+            return text, None
+        except requests.exceptions.HTTPError:
+            status = response.status_code
+            if status == 429 and attempt < retries:
+                time.sleep(retry_delay * attempt)
+                continue
+            return None, f"OpenRouter API Error {status}"
+        except Exception as e:
+            return None, f"OpenRouter error: {str(e)}"
+
+    return None, "OpenRouter rate limit exceeded."
+
+
+# ── MAIN CALLER WITH FALLBACK ─────────────────────────────────────────────────
+
+def call_ai(prompt, max_tokens=1500):
+    """
+    Tries Gemini first, then Groq, then OpenRouter.
+    Automatically falls back if one fails or hits rate limits.
+    """
+    errors = []
+
+    # Try Gemini first
+    if get_gemini_key():
+        text, error = call_gemini(prompt, max_tokens)
+        if text:
+            return text
+        errors.append(f"Gemini: {error}")
+        st.warning(f"⚠️ Gemini unavailable ({error}). Trying Groq...")
+
+    # Try Groq second
+    if get_groq_key():
+        text, error = call_groq(prompt, max_tokens)
+        if text:
+            return text
+        errors.append(f"Groq: {error}")
+        st.warning(f"⚠️ Groq unavailable ({error}). Trying OpenRouter...")
+
+    # Try OpenRouter third
+    if get_openrouter_key():
+        text, error = call_openrouter(prompt, max_tokens)
+        if text:
+            return text
+        errors.append(f"OpenRouter: {error}")
+
+    # All failed
+    error_summary = " | ".join(errors)
+    return f"⚠️ All AI providers failed: {error_summary}\n\nPlease check your API keys in .streamlit/secrets.toml and try again."
+
+
+# ── PROMPT BUILDER ────────────────────────────────────────────────────────────
 
 def build_prompt(analyzed_df, sector_summary, overall_summary,
                  donor_type, qualitative_notes, org_name, report_period,
                  risk_summary=None):
-    """
-    Builds a rich, context-aware prompt for Gemini.
-    """
+    """Builds an optimized concise prompt to reduce token usage."""
     donor_guideline = DONOR_GUIDELINES.get(donor_type, DONOR_GUIDELINES["General"])
-    indicator_text = analyzed_df.to_string(index=False)
+    top_indicators = analyzed_df.head(10).to_string(index=False)
     sector_text = sector_summary.to_string(index=False)
 
     risk_section = ""
     if risk_summary:
-        risk_section = f"""
-Early Warning Risk Assessment:
-- High Risk Indicators: {risk_summary['high_risk']}
-- Medium Risk Indicators: {risk_summary['medium_risk']}
-- Low Risk Indicators: {risk_summary['low_risk']}
-
-Please reference the risk assessment in your recommendations section.
-"""
+        risk_section = f"\nRisk: High={risk_summary['high_risk']} Medium={risk_summary['medium_risk']} Low={risk_summary['low_risk']}"
 
     qualitative_section = ""
     if qualitative_notes and qualitative_notes.strip():
-        qualitative_section = f"""
-Field Notes & Qualitative Context (from programme team):
-{qualitative_notes}
+        qualitative_section = f"\nField Notes: {qualitative_notes[:500]}"
 
-Incorporate these field insights naturally into the narrative where relevant.
-"""
+    return f"""Senior M&E specialist writing donor report for {org_name}.
+Period: {report_period or 'Current Period'} | Donor: {donor_type}
+Guidelines: {donor_guideline}
 
-    prompt = f"""You are a senior M&E specialist writing a donor progress report for {org_name}.
-Reporting Period: {report_period if report_period else 'Current Period'}
-Donor: {donor_type}
-Writing Guidelines: {donor_guideline}
+Performance: {overall_summary['overall_achievement']}% overall | {overall_summary['met']} met | {overall_summary['on_track']} on track | {overall_summary['off_track']} off track
+Beneficiaries: {int(overall_summary['total_achieved']):,} reached of {int(overall_summary['total_target']):,} targeted
+{risk_section}{qualitative_section}
 
-Programme Performance Summary:
-- Total Indicators: {overall_summary['total_indicators']}
-- Overall Achievement Rate: {overall_summary['overall_achievement']}%
-- Indicators Met/Exceeded: {overall_summary['met']}
-- Indicators On Track: {overall_summary['on_track']}
-- Indicators Off Track: {overall_summary['off_track']}
-- Total Beneficiaries Reached: {int(overall_summary['total_achieved']):,}
-- Total Target Beneficiaries: {int(overall_summary['total_target']):,}
+Top Indicators:
+{top_indicators}
 
-Detailed Indicator Data:
-{indicator_text}
-
-Sector Performance:
+Sectors:
 {sector_text}
-{risk_section}
-{qualitative_section}
 
-Write a professional donor report narrative with these exact sections:
-
+Write a professional donor narrative with these sections:
 ## 1. Executive Summary
-2-3 paragraphs. High-level overview of programme performance, headline achievements, and any critical issues.
-
 ## 2. Key Achievements
-Highlight top performing indicators and sectors with specific numbers. Make it human — not just statistics.
+## 3. Challenges & Mitigation
+## 4. Recommendations & Next Steps
+## 5. Conclusion
 
-## 3. Challenges & Mitigation Measures
-For each off-track indicator, explain plausible operational reasons and corrective actions being taken.
+Professional tone, full paragraphs, no bullet points."""
 
-## 4. Risk Assessment & Early Warnings
-Highlight indicators showing early warning signs and recommend proactive measures.
 
-## 5. Recommendations & Next Steps
-3-5 concrete, actionable recommendations for the next reporting period.
-
-## 6. Conclusion
-One strong closing paragraph reaffirming commitment to programme goals and beneficiaries.
-
-Tone: Professional, transparent, results-oriented, and human.
-Format: Full paragraphs only — no bullet points in the narrative body.
-"""
-    return prompt
-
+# ── PUBLIC FUNCTIONS ──────────────────────────────────────────────────────────
 
 def generate_narrative(analyzed_df, sector_summary, overall_summary,
                        donor_type="General", qualitative_notes="",
                        org_name="Our Organisation", report_period="",
                        risk_summary=None):
-    """
-    Generates full donor narrative using Gemini API.
-    """
+    """Generates full donor narrative using available AI provider."""
     prompt = build_prompt(
         analyzed_df, sector_summary, overall_summary,
         donor_type, qualitative_notes, org_name, report_period,
         risk_summary
     )
-    return call_gemini(prompt, max_tokens=2000)
+    return call_ai(prompt, max_tokens=1500)
 
 
 def generate_executive_brief(overall_summary, sector_summary,
                               org_name, report_period, donor_type):
-    """
-    Generates a short executive brief for senior leadership.
-    """
+    """Generates a short executive brief for senior leadership."""
     sector_text = sector_summary.to_string(index=False)
+    prompt = f"""Executive brief for {org_name} | Period: {report_period} | Donor: {donor_type}
 
-    prompt = f"""Write a concise one-page executive brief for {org_name} senior leadership.
-Reporting Period: {report_period}
-Donor: {donor_type}
+Performance: {overall_summary['overall_achievement']}% | Met: {overall_summary['met']}/{overall_summary['total_indicators']} | Off Track: {overall_summary['off_track']}
 
-Performance:
-- Overall Achievement: {overall_summary['overall_achievement']}%
-- Indicators Met: {overall_summary['met']} of {overall_summary['total_indicators']}
-- Off Track: {overall_summary['off_track']}
-
-Sector Performance:
+Sectors:
 {sector_text}
 
-Write 3 short paragraphs:
-1. Headline performance (2-3 sentences)
-2. Key wins and concerns (3-4 sentences)
-3. Immediate actions needed (2-3 sentences)
+Write 3 short paragraphs: headline performance, key wins/concerns, immediate actions.
+Sharp, direct, leadership-ready. No headers."""
 
-Keep it sharp, direct, and leadership-ready. No section headers needed."""
-
-    return call_gemini(prompt, max_tokens=600)
+    return call_ai(prompt, max_tokens=400)
